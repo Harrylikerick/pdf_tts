@@ -76,6 +76,7 @@ def extract_romanized_text_from_pdf(file_path):
             
             for block in blocks:
                 if block['type'] == 0:  # 文本块
+                    block_text = ""
                     for line in block['lines']:
                         for span in line['spans']:
                             if span['color'] != 0:  # 不是黑色文本
@@ -85,47 +86,31 @@ def extract_romanized_text_from_pdf(file_path):
                             if not text:
                                 continue
                             
-                            # 检查是否为标题开始
+                            # 改进标题识别逻辑
                             is_title_start = bool(
-                                re.search(r'M05\.\d+|陀罗尼|咒|真言', text) or
-                                ('卍' in text and len(text) < 100)
+                                re.search(r'M05\.\d+', text) or  # M05.xx 格式
+                                ('卍' in text) or  # 卍 符号
+                                re.search(r'[一切如来|金刚|寿命|陀罗尼|咒|真言]', text)  # 关键词
                             )
                             
-                            # 检查是否为标题的括号部分
-                            is_title_bracket = bool(
-                                in_title and 
-                                (text.startswith('(') or text.endswith(')') or 
-                                 re.search(r'[（）()]|陀罗尼|咒|真言', text))
-                            )
-                            
-                            if is_title_start or is_title_bracket:
-                                # 如果当前有咒语文本，保存它
-                                if current_text:
-                                    cleaned_text = clean_mantra_text(current_text)
-                                    if cleaned_text:
-                                        romanized_texts.append(cleaned_text)
-                                        titles.append(clean_title(current_title) if current_title else f"Section {len(romanized_texts) + 1}")
-                                    current_text = ""
-                                
-                                # 处理标题
-                                if is_title_start:
-                                    if current_title and not is_title_bracket:  # 如果是新标题
-                                        current_title = text
-                                    else:
-                                        current_title = (current_title + " " + text).strip()
-                                    in_title = True
-                                elif is_title_bracket:
+                            if is_title_start:
+                                # 如果已经有标题内容，并且当前文本包含编号，则开始新标题
+                                if current_title and re.search(r'M05\.\d+', text):
+                                    if current_text:
+                                        cleaned_text = clean_mantra_text(current_text)
+                                        if cleaned_text:
+                                            romanized_texts.append(cleaned_text)
+                                            titles.append(clean_title(current_title))
+                                        current_text = ""
+                                    current_title = text
+                                else:
+                                    # 否则累加到当前标题
                                     current_title = (current_title + " " + text).strip()
-                                
                                 is_mantra_block = True
                                 continue
                             
-                            # 如果不是标题相关文本，结束标题处理模式
-                            if in_title and not is_title_bracket:
-                                in_title = False
-                            
                             # 检查是否包含梵文字符或罗马字母
-                            has_sanskrit = bool(re.search(r'[āīūṛṝḷḹēōṭḍṇṣśḥṃñṅ]', text))  # 添加更多梵文字符
+                            has_sanskrit = bool(re.search(r'[āīūṛṝḷḹēōṭḍṇṣśḥṃñṅ]', text))
                             is_roman = bool(re.match(r'^[a-zA-Z\s]+$', text))
                             
                             if has_sanskrit or is_roman:
@@ -134,14 +119,14 @@ def extract_romanized_text_from_pdf(file_path):
                     
                     # 每个块结束时，如果有标题，清理标题
                     if current_title and not in_title:
-                        current_title = clean_title(current_title)
+                        current_title = current_title.strip()
         
         # 处理最后一个咒语块
         if current_text:
             cleaned_text = clean_mantra_text(current_text)
             if cleaned_text:
                 romanized_texts.append(cleaned_text)
-                titles.append(clean_title(current_title) if current_title else f"Section {len(romanized_texts) + 1}")
+                titles.append(clean_title(current_title))
         
         pdf_document.close()
         return romanized_texts, titles
@@ -165,48 +150,64 @@ def clean_mantra_text(text):
 
 def clean_title(title):
     """Clean and format title."""
-    # 移除重复的空格和标点
-    title = re.sub(r'\s+', ' ', title)
-    title = re.sub(r'[,，、。]+', '', title)
-    
-    # 处理括号内容
-    # 1. 提取所有括号内容
-    bracket_contents = re.findall(r'[（(](.*?)[）)]', title)
-    # 2. 移除重复的括号内容
-    seen_contents = set()
-    unique_contents = []
-    for content in bracket_contents:
-        content = content.strip()
-        if content not in seen_contents:
-            seen_contents.add(content)
-            unique_contents.append(content)
-    
-    # 3. 移除原有的所有括号内容
-    title = re.sub(r'[（(].*?[）)]', '', title)
+    # 1. 基础清理
     title = title.strip()
+    title = re.sub(r'[,，、。"""]', '', title)
     
-    # 4. 处理 M05.xx 格式
-    m05_match = re.search(r'M05\.(\d+)', title)
+    # 2. 处理 M05.xx 格式
+    m05_match = re.search(r'M05\.?(\d+)', title)
+    prefix = ""
     if m05_match:
         number = m05_match.group(1)
-        title = re.sub(r'M05\.\d+\s*', '', title)
-        title = f"M05{number}_{title}"
+        title = re.sub(r'M05\.?\d+\s*', '', title)
+        prefix = f"M05{number.zfill(2)}"
     
-    # 5. 移除 "卍" 符号和其他不需要的字符
-    title = title.replace('卍', '')
-    title = re.sub(r'["""]', '', title)
-    title = re.sub(r'[_\-]+', '_', title)
+    # 3. 保留卍符号
+    has_start_wan = title.startswith('卍')
+    has_end_wan = title.endswith('卍')
+    title = title.strip('卍').strip()
     
-    # 6. 添加唯一的括号内容
-    if unique_contents:
-        title = title + '_' + '_'.join(unique_contents)
+    # 4. 移除不必要的信息
+    title = re.sub(r'[（(].*?[）)]', '', title)  # 移除括号内容
+    title = re.sub(r'《[^》]+》', '', title)  # 移除书名号内容
+    title = re.sub(r'第\d+[卷册]', '', title)  # 移除卷册编号
+    title = re.sub(r'房山[石经]?', '', title)  # 移除来源信息
     
-    # 7. 最终清理
-    title = re.sub(r'\s+', '_', title.strip())
-    title = re.sub(r'_{2,}', '_', title)  # 移除连续的下划线
-    title = title.strip('_')  # 移除首尾的下划线
+    # 5. 查找标题结束位置
+    # 先找完整的"陀罗尼"
+    end_pos = -1
+    match = re.search(r'.*?陀.*?罗.*?尼', title)
+    if match:
+        end_pos = match.end()
+    else:
+        # 如果没找到完整的"陀罗尼"，尝试找"真言"或"咒"
+        for marker in ['真言', '咒']:
+            match = re.search(f'.*?{marker}', title)
+            if match:
+                end_pos = match.end()
+                break
     
-    return title
+    # 如果找到了结束位置，截断标题
+    if end_pos > 0:
+        title = title[:end_pos]
+    
+    # 6. 组合最终标题
+    if prefix:
+        final_title = prefix + "_"
+        if has_start_wan:
+            final_title += "卍"
+        final_title += title
+        if has_end_wan:
+            final_title += "卍"
+    else:
+        final_title = title
+    
+    # 7. 清理最终标题
+    final_title = re.sub(r'\s+', '_', final_title)  # 空格转下划线
+    final_title = re.sub(r'_{2,}', '_', final_title)  # 移除连续下划线
+    final_title = final_title.strip('_')  # 移除首尾下划线
+    
+    return final_title or "Untitled"
 
 def process_pdf_to_audio(file_path, output_folder):
     """Extract Romanized Sanskrit text from a PDF and convert it into Romanian audio."""
